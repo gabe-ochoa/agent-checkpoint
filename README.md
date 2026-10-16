@@ -1,6 +1,10 @@
 # Agent Checkpoint
 
-Save the goal, decisions, blockers, and next action for a coding task. Resume it in another session. Finish with a recorded verification command.
+Coding work doesn't always fit in one agent session. You can be halfway through a change when the conversation runs out of room, your terminal closes, or you need to switch tasks. The code is still there, but the next session needs to know why you made a decision, what you already checked, and what to do next.
+
+We built Agent Checkpoint so an agent can leave a useful handoff before it stops. Save the goal, decisions, blockers, and next action under a task name, then load that checkpoint when you're ready to continue. When the work is done, run a verification command through the tool so the checkpoint records what actually passed.
+
+It started in my dotfiles, and we pulled it into its own tool so you can use it without adopting the rest of my setup.
 
 Python 3.11+, macOS or Linux, and Git for repository awareness. No runtime dependencies. Checkpoints stay on your machine.
 
@@ -43,7 +47,7 @@ State selection, highest priority first:
 
 Reads existing schema-1 JSON records. To reuse a legacy state directory, stop all old checkpoint writers and hooks, then select that directory explicitly. The old harness does not honor the new lock. Never run both against shared state. Installation does not copy records or change hooks. Back up state before migration.
 
-`.agent/harness.toml` in the project can set only `checkpoint.resume_context_tokens` and `checkpoint.max_offer_age_days`. Defaults are 2000 and 30. Other harness settings are ignored. Repository matching uses the checkout path, shared Git directory for worktrees, or normalized origin for clones.
+A project can use `.agent/harness.toml` to set the resume context budget with `checkpoint.resume_context_tokens` and the maximum age of offered tasks with `checkpoint.max_offer_age_days`. The defaults are 2000 tokens and 30 days, and the tool ignores other harness settings. To find tasks across checkouts, it matches the repository path, the shared Git directory for worktrees, or the normalized origin URL for clones.
 
 ## Agent instructions
 
@@ -57,15 +61,15 @@ Optional transcript capture:
 agent-checkpoint capture --transcript /path/to/session.jsonl --event compact --cwd /path/to/project
 ```
 
-Use repeated `--exclude-prefix TEXT` options to omit application-specific prompts. Adapters recognize Claude and Codex JSONL event shapes. They use explicit provenance metadata, not personal prompt matchers. Unsupported formats may produce `null`. Capture is bounded to 32 MiB total and 1 MiB per event. Automatic crash-journal recovery belongs to the original harness and is not included. Hook installation is opt-in: call the command above from your agent's lifecycle hook with its transcript and cwd. No settings are overwritten. Transcript formats can change. See the synthetic tests for supported shapes.
+Use repeated `--exclude-prefix TEXT` options to omit application-specific prompts. Adapters recognize Claude and Codex JSONL event shapes. They use explicit provenance metadata, not personal prompt matchers. Unsupported formats may produce `null`. Capture is bounded to 32 MiB total and 1 MiB per event. Automatic crash-journal recovery belongs to the original harness and is not included. Hook installation is opt-in: call the command above from your agent's lifecycle hook with its transcript and cwd. The tool leaves your settings alone, and the synthetic tests show which event shapes the adapters support. Check those examples when a transcript format changes.
 
 ## Guarantees and limits
 
-Local files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Atomic replacement protects individual records. Multi-record supersede, dedupe, and close operations are not crash-atomic. After interruption, inspect `list --json`, statuses, and `supersedes`/`superseded_by` links before retrying. Catchable failures during multi-record operations report possible partial progress. Abrupt termination cannot report progress. Keep backups.
+Local files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Atomic replacement protects individual records. Multi-record supersede, dedupe, and close operations are not crash-atomic. After interruption, inspect `list --json`, statuses, and `supersedes`/`superseded_by` links before retrying. If a multi-record operation fails while the process is still running, the tool reports that some writes may have completed. A killed process cannot report its progress, so keep backups and inspect the records before retrying.
 
-Verification runs without holding the lock. Completion rejects a changed task revision, repository, or HEAD. It records the command result for the observed HEAD. It does not guarantee that uncommitted working files stayed unchanged during execution. Concurrent source edits are outside this guarantee. A different worktree or clone must match the checkpoint HEAD. Verification cannot be applied to finished tasks. Save the name again to reopen.
+Verification runs without holding the lock. Completion rejects a changed task revision, repository, or HEAD. It records the command result for the observed HEAD. It does not guarantee that uncommitted working files stayed unchanged during execution. Concurrent source edits are outside this guarantee. A different worktree or clone must match the checkpoint HEAD. To verify a finished task again, save the same name to reopen it first.
 
-Pattern-based redaction reduces accidental secret storage. It cannot recognize every secret. Checkpoint state and captured context are private, untrusted data. Review before sharing. Never put state directories in public Git. State paths are trusted user choices, not a sandbox against another process running as your OS account. Use local storage with reliable POSIX file locks. Network filesystems and Windows are unsupported. Python interfaces are internal in v0.1.
+The tool redacts recognizable secret patterns, but it cannot catch every credential, so review checkpoint files before sharing them and keep state directories out of public Git. Treat captured context as untrusted text. You choose the state directory, and its file permissions cannot isolate it from another process running as your OS account. Use local storage with reliable POSIX file locks; network filesystems and Windows are unsupported. The command line is the supported interface in v0.1, while the Python interfaces may change.
 
 ## Development
 
