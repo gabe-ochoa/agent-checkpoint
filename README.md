@@ -4,6 +4,8 @@ Coding work doesn't always fit in one agent session. You can be halfway through 
 
 We built Agent Checkpoint so an agent can leave a useful handoff before it stops. Save the goal, decisions, blockers, and next action under a task name, then load that checkpoint when you're ready to continue. When the work is done, run a verification command through the tool so the checkpoint records what actually passed.
 
+The work log also makes the agent's work observable. You can look back at recorded goals, decisions, blockers, and test results to see how the work progressed across sessions and what the agent finished. That gives you something concrete to review when you're running several tasks or handing work between agents.
+
 It started in my dotfiles, and we pulled it into its own tool so you can use it without adopting the rest of my setup.
 
 Python 3.11+, macOS or Linux, and Git for repository awareness. No runtime dependencies. Checkpoints stay on your machine.
@@ -31,6 +33,72 @@ agent-checkpoint log
 ```
 
 Saving the same name updates a task. Saving a finished task reopens it. `verify` records results and leaves it open. Failed checks leave it open. `complete --manual` records an explicit human override. Verification commands run in `/bin/sh` with your PATH and are caller-authorized code. Captured text never runs commands.
+
+## Session history and observability
+
+Resuming a task is only part of the problem. We also want to review what the agent worked toward, where it got stuck, and what evidence it left behind. The work log brings those records together, so you can follow a task from its goal through a failed check, a resolved blocker, and a verified outcome.
+
+Here's a synthetic parser task carried across three sessions. The project already has a parser and tests; the first check fails, and the agent fixes the parser before the final check.
+
+```sh
+# Session 1: set the goal and leave the next step.
+agent-checkpoint save --name parser \
+  --goal "Parse comma-separated values" \
+  --next "Handle empty input" \
+  --decision "Keep empty input as an empty list" \
+  --artifact parser.py
+
+# Session 2: record a failed check and the blocker it exposed.
+agent-checkpoint verify parser --run "python3 -m unittest -q"
+agent-checkpoint save --name parser \
+  --next "Fix empty-input handling" \
+  --blocker "Empty input returns one blank field"
+
+# Session 3: after fixing the parser, record the decision and check again.
+agent-checkpoint save --name parser \
+  --next "Run the tests again" --clear-blocker \
+  --decision "Strip surrounding whitespace before splitting"
+agent-checkpoint complete parser \
+  --run "python3 -m unittest -q" \
+  --note "Empty input and whitespace cases pass"
+
+agent-checkpoint log
+```
+
+Output from that example, with dates and commit IDs that will vary:
+
+```text
+# Work log
+
+## 2026-10-16 parser (complete)
+
+- Repo: parser-demo on main at 339489cd, started 2026-10-16
+- Goal: Parse comma-separated values
+- Outcome: Empty input and whitespace cases pass
+- Artifacts: `parser.py`
+- Decisions:
+  - Keep empty input as an empty list
+  - Strip surrounding whitespace before splitting
+- Blockers hit: Empty input returns one blank field
+- Verification: python3 -m unittest -q [failed]; python3 -m unittest -q [passed]
+```
+
+To review work across projects, use the same records as Markdown or JSON:
+
+```sh
+# Current goals, blockers, and next steps for unfinished work.
+agent-checkpoint list --status open --json
+
+# Finished work across repositories over the last 30 days.
+agent-checkpoint log --all-repos --since 30
+
+# Structured outcomes and retained evidence for your own reports.
+agent-checkpoint log --all-repos --since 30 --json
+```
+
+By default, the log includes completed tasks and work marked done elsewhere. You can also include abandoned or superseded tasks with `--include`. When one checkpoint supersedes another, the log folds the older decisions and blockers into the finished task so you can review the work together.
+
+The history covers what you record in checkpoints. Saving the same name updates the current goal and next action, while decisions, blocker history, and verification results are retained in bounded lists. The Markdown log shows the latest five checks per task, and JSON includes the retained check timestamps and commit IDs. It does not preserve every message or every revision of a checkpoint.
 
 ## Commands
 
