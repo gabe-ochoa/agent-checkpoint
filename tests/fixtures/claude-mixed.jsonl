@@ -1,0 +1,4 @@
+{"type":"system","subtype":"scheduled_task_fire","sessionId":"synthetic"}
+{"type":"user","sessionId":"synthetic","promptSource":"sdk","message":{"role":"user","content":"Automated example"}}
+{"type":"user","sessionId":"synthetic","origin":{"kind":"human"},"message":{"role":"user","content":"Continue the deployment plan"}}
+{"type":"assistant","sessionId":"synthetic","message":{"role":"assistant","content":[{"type":"text","text":"Check the local result next."}]}}

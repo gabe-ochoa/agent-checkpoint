@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-checkpoint"
+version = "0.1.0"
+description = "Local, verifiable task checkpoints for coding agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Gabe Ochoa"}]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: POSIX"]
+
+[project.scripts]
+agent-checkpoint = "agent_checkpoint.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
