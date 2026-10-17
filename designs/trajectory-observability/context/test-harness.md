@@ -1,0 +1,5 @@
+# Test harness
+
+Reference model applies batches to an in-memory map. Compare generated save, goal-change, blocker, verify, close/reopen and handoff sequences with replay. Assert monotonic sequence and a valid previous hash. Inject failure before rename, after rename, and during projection refresh. Kill real writer processes at commit boundaries; validate old/new state and lock release. Test concurrent distinct and same-task updates, malformed records and batches, missing sequence, symlinks and no-op reads.
+
+OTLP tests inspect lowerCamelCase, numeric enum fields, hex IDs, string timestamps, redacted default content, attempt correlation and a local HTTP receiver. Cover partial success, rejection, malformed replies, timeouts, stable event IDs and zero network calls from normal mutations. Installer tests use a temporary home and verify immutable runtime hashes, interpreter selection and preservation of existing state. Installed-wheel checks run new CLI commands outside checkout. Downstream tests assert all checkpoint operations delegate upstream and old hooks still capture/recover.

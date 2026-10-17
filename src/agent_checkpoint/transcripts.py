@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 from . import core
+from .journal import transaction
 from .redaction import redact_secrets
-from .storage import locked
 
 MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024
 MAX_EVENT_BYTES = 1024 * 1024
@@ -58,6 +58,8 @@ def read_summary(path, exclude_prefixes=()):
                 raise ValueError(
                     "transcript exceeds capture size limit (32 MiB total, 1 MiB/event); split into a smaller transcript"
                 )
+            if not raw.strip():
+                continue
             try:
                 event = json.loads(raw)
             except (ValueError, UnicodeError, RecursionError) as exc:
@@ -182,7 +184,7 @@ def read_summary(path, exclude_prefixes=()):
 
 
 def capture(state, transcript, cwd, event, exclude_prefixes=()):
-    if event not in ("compact", "stop", "session-end"):
+    if event not in ("compact", "stop", "session-end", "journal"):
         raise ValueError("invalid capture event")
     session = read_summary(Path(transcript), exclude_prefixes)
     if not session["goal"]:
@@ -196,7 +198,12 @@ def capture(state, transcript, cwd, event, exclude_prefixes=()):
         if session["assistant"]
         else "Respond to: " + core.first_sentence(session["last"])
     )
-    with locked(state):
+    with transaction(
+        state,
+        "capture",
+        {"session_id": session["session_id"], "platform": session["platform"]},
+    ) as tx:
+        state = tx.state
         identifier = core._checkpoint_id(
             core.git_snapshot(cwd)["repo"], session["session_id"]
         )

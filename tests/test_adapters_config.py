@@ -236,6 +236,9 @@ class AdapterConfigTests(unittest.TestCase):
             raw = json.loads(path.read_text())
             raw["goal"] = "github_pat_" + "a" * 40
             raw["status"] = "complete"
+            state = root / "legacy"
+            path = state / "checkpoints" / path.name
+            path.parent.mkdir(parents=True)
             path.write_text(json.dumps(raw))
             result = subprocess.run(
                 [

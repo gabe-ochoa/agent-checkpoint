@@ -318,7 +318,7 @@ def save_checkpoint(
             )
     except OSError as exc:
         raise RuntimeError(
-            "partial supersede: new record saved; inspect list --json and supersedes links before retrying"
+            "supersede failed before history commit; transaction discarded"
         ) from exc
     return record
 
@@ -326,6 +326,21 @@ def save_checkpoint(
 def list_checkpoints(
     state_dir: Path, status: str | None = None
 ) -> list[dict[str, Any]]:
+    from copy import deepcopy
+
+    from .storage import active_for
+
+    tx = active_for(state_dir)
+    if tx is not None:
+        directory = _checkpoint_dir(state_dir)
+        if directory.is_symlink():
+            raise ValueError("symlinked checkpoints directory")
+        records = [
+            dict(deepcopy(record), _path=str(directory / f"{identifier}.json"))
+            for identifier, record in tx.records.items()
+            if status is None or record["status"] == status
+        ]
+        return sorted(records, key=lambda item: item["updated_at"], reverse=True)
     records: list[dict[str, Any]] = []
     directory = _checkpoint_dir(state_dir)
     if directory.is_symlink():
@@ -523,7 +538,7 @@ def dedupe_checkpoints(state_dir: Path, apply: bool = False) -> list[dict[str, s
                 )
             except OSError as exc:
                 raise RuntimeError(
-                    "partial dedupe: inspect list --json and superseded_by links before retrying"
+                    "dedupe failed before history commit; transaction discarded"
                 ) from exc
     return actions
 

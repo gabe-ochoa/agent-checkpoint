@@ -16,5 +16,5 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip wheel --no-deps . -w dist
-      - run: python scripts/validate_wheel.py dist/agent_checkpoint-0.1.0-py3-none-any.whl
+      - run: python scripts/validate_wheel.py dist/agent_checkpoint-0.2.0-py3-none-any.whl
       - run: make test-failure

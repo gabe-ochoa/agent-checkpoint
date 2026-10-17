@@ -48,6 +48,11 @@ def main():
         shutil.copytree(
             root / "tests", work / "tests", ignore=shutil.ignore_patterns("__pycache__")
         )
+        shutil.copytree(
+            root / "scripts",
+            work / "scripts",
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
         subprocess.run(
             [str(python), "-m", "unittest", "discover", "-s", "tests"],
             cwd=work,
@@ -104,6 +109,23 @@ def main():
             + "\n"
         )
         cli("capture", "--transcript", str(transcript), "--event", "compact")
+        cli("history", "example", "--json")
+        cli("timeline", "--all-repos", "--json")
+        cli("stats", "--all-repos")
+        cli("export", "--format", "json", "--all-repos")
+        cli("export", "--format", "otlp", "--all-repos")
+        cli("export", "--format", "otlp", "--signal", "traces", "--all-repos")
+        cli("save", "--name", "parent", "--goal", "Parent goal", "--next", "Next")
+        cli("save", "--name", "child", "--goal", "Child goal", "--next", "Next")
+        cli("link", "child", "--parent", "parent")
+        cli(
+            "handoff",
+            "child",
+            "--to-agent",
+            "reviewer",
+            "--to-session",
+            "review-session",
+        )
         cli("--help")
     print(
         json.dumps(

@@ -1,0 +1,76 @@
+"""Supported downstream adapter API for 0.2.x. No downstream storage logic required.
+
+Paths select state explicitly; actor_context supplies agent/session identities.
+Functions return schema-1 records (plus internal _path), JSON report dictionaries,
+or None when capture has no task. Errors are ValueError for invalid data,
+OSError for filesystem errors, and RuntimeError for conflicts/uncertain commits.
+"""
+
+from .git import _normalize_remote, repo_identity, same_repo
+from .lifecycle import consolidate_journals, record_journal
+from .service import (
+    CLOSE_REASONS,
+    FINISHED_REASONS,
+    actor_context,
+    capture_checkpoint,
+    checkpoint_context,
+    clean_prompt,
+    close_checkpoint,
+    close_many,
+    complete_checkpoint,
+    dedupe_checkpoints,
+    first_sentence,
+    handoff_checkpoint,
+    history,
+    link_checkpoint,
+    list_checkpoints,
+    offer_checkpoint,
+    offer_checkpoints,
+    render_work_log,
+    resolve_checkpoint,
+    resume_checkpoint,
+    run_verification,
+    save_checkpoint,
+    stale_checks,
+    stats,
+    timeline,
+    verify_checkpoint,
+    work_log,
+)
+from .storage import read_record_file as read_checkpoint_cache
+
+__all__ = [
+    "save_checkpoint",
+    "list_checkpoints",
+    "resolve_checkpoint",
+    "offer_checkpoints",
+    "offer_checkpoint",
+    "verify_checkpoint",
+    "complete_checkpoint",
+    "close_checkpoint",
+    "close_many",
+    "dedupe_checkpoints",
+    "work_log",
+    "render_work_log",
+    "checkpoint_context",
+    "stale_checks",
+    "clean_prompt",
+    "first_sentence",
+    "capture_checkpoint",
+    "resume_checkpoint",
+    "handoff_checkpoint",
+    "link_checkpoint",
+    "run_verification",
+    "history",
+    "timeline",
+    "stats",
+    "actor_context",
+    "CLOSE_REASONS",
+    "FINISHED_REASONS",
+    "record_journal",
+    "consolidate_journals",
+    "repo_identity",
+    "same_repo",
+    "_normalize_remote",
+    "read_checkpoint_cache",
+]

@@ -124,7 +124,11 @@ class StorageTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 state = Path(td) / "state"
                 api.save_checkpoint(state, Path(td), "Task", "Next", name="task")
+                old_path = state / "checkpoints/task.json"
+                state = Path(td) / "legacy"
                 path = state / "checkpoints/task.json"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(old_path.read_bytes())
                 record = json.loads(path.read_text())
                 mutate(record)
                 path.write_text(json.dumps(record))
@@ -156,7 +160,7 @@ class StorageTests(unittest.TestCase):
             )
             self.assertEqual(before, path.read_bytes())
 
-    def test_partial_close_reports_progress(self):
+    def test_close_failure_discards_the_entire_batch(self):
         with tempfile.TemporaryDirectory() as td:
             state = Path(td) / "state"
             for name in ("one", "two"):
@@ -169,9 +173,9 @@ class StorageTests(unittest.TestCase):
                 return real(*args, **kwargs)
 
             with mock.patch.object(core, "close_checkpoint", side_effect=close):
-                with self.assertRaisesRegex(RuntimeError, "1 of 2"):
+                with self.assertRaisesRegex(RuntimeError, "no changes applied"):
                     api.close_many(state, ["one", "two"], "abandoned")
-            self.assertEqual("closed", api.resolve_checkpoint(state, "one")["status"])
+            self.assertEqual("open", api.resolve_checkpoint(state, "one")["status"])
             self.assertEqual("open", api.resolve_checkpoint(state, "two")["status"])
 
     def test_close_preflights_every_reference(self):
@@ -196,7 +200,7 @@ class StorageTests(unittest.TestCase):
 
     def test_cli_lock_timeout_has_recovery_guidance(self):
         with tempfile.TemporaryDirectory() as td:
-            code = "from functools import partial; from agent_checkpoint import service, cli; service.locked=partial(service.locked, timeout=0.03); raise SystemExit(cli.main())"
+            code = "from functools import partial; from agent_checkpoint import storage, cli; storage.locked=partial(storage.locked, timeout=0.03); raise SystemExit(cli.main())"
             with storage.locked(Path(td)):
                 result = subprocess.run(
                     [sys.executable, "-c", code, "--state-dir", td, "list"],
