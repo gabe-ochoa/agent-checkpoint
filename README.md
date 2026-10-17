@@ -18,6 +18,14 @@ From a checkout:
 python3 -m pip install .
 ```
 
+For an offline install from a checkout, with no pip or build dependencies:
+
+```sh
+python3 scripts/install.py
+```
+
+The installer verifies an immutable runtime before switching the active version. It does not move checkpoint state or install agent hooks.
+
 ## Quickstart
 
 Run from the project you are working on:
@@ -98,11 +106,46 @@ agent-checkpoint log --all-repos --since 30 --json
 
 By default, the log includes completed tasks and work marked done elsewhere. You can also include abandoned or superseded tasks with `--include`. When one checkpoint supersedes another, the log folds the older decisions and blockers into the finished task so you can review the work together.
 
-The history covers what you record in checkpoints. Saving the same name updates the current goal and next action, while decisions, blocker history, and verification results are retained in bounded lists. The Markdown log shows the latest five checks per task, and JSON includes the retained check timestamps and commit IDs. It does not preserve every message or every revision of a checkpoint.
+Every successful update now records an immutable event, including the previous goal and next action. The named checkpoint is the current view of that history, while `history` lets you review the earlier revisions. The work log stays compact and shows the latest five checks per task; the history retains earlier recorded checks as well. Transcript capture records task context, rather than every message in a conversation.
+
+Record explicit identities when you know which session and agent are doing the work:
+
+```sh
+agent-checkpoint --agent-id builder --session-id session-1 \
+  save --name parser --goal "Build the parser" --next "Handle empty input"
+agent-checkpoint --agent-id reviewer --session-id session-2 resume parser --context
+agent-checkpoint history parser
+agent-checkpoint timeline --all-repos --since 7 --limit 100 --json
+agent-checkpoint stats --all-repos --since 30
+agent-checkpoint handoff parser --to-agent reviewer --to-session session-2
+```
+
+You can also set `AGENT_CHECKPOINT_AGENT_ID` and `AGENT_CHECKPOINT_SESSION_ID`. Missing identities stay unknown, and reports show that gap instead of guessing who did the work. Use `link TASK --parent PARENT` to connect a smaller task to its parent goal.
+
+History and timeline pages return `next_cursor` and `has_more`. Pass the cursor back with `--after` to continue in commit order, even when several events share a timestamp. Statistics report recorded goal changes, handoffs, reopens, verification outcomes, blocked wall time, and command duration. They do not estimate active effort, model quality, tokens, or cost. Imported tasks are labeled as baselines because earlier revisions cannot be recovered.
 
 ## Commands
 
-`save`, `list`, `offer`, `resume`, `verify`, `complete`, `close`, `log`, `dedupe`, and `capture` have `--help`. Most commands output JSON. `list` defaults to a table, `log` to Markdown, and `resume --context` to readable text. Use `list --json` and `log --json` for scripts. Verification command output goes to stderr, keeping stdout parseable. Exit status: 0 success, 1 operational failure, 2 argument error. `offer` with no matching task returns 1 and `null`.
+`save`, `list`, `offer`, `resume`, `verify`, `complete`, `close`, `log`, `dedupe`, `capture`, `history`, `timeline`, `stats`, `handoff`, `link`, and `export` have `--help`. Most commands output JSON. `list` defaults to a table, `log` to Markdown, and `resume --context` to readable text. Use `list --json` and `log --json` for scripts. Verification command output goes to stderr, keeping stdout parseable. Exit status: 0 success, 1 operational failure, 2 argument error. `offer` with no matching task returns 1 and `null`.
+
+## OpenTelemetry export
+
+The local history is useful on its own, and you can export it when you want to review agent work alongside the rest of your telemetry. The exporter uses Python's standard library to produce OTLP/HTTP JSON, with no SDK or collector required on the agent machine.
+
+```sh
+# Produce an OTLP log payload without making a network request.
+agent-checkpoint export --format otlp --signal logs --all-repos > agent-events.otlp.json
+
+# Send recorded verification spans to an explicitly selected local collector.
+agent-checkpoint export --format otlp --signal traces \
+  --endpoint http://127.0.0.1:4318/v1/traces
+```
+
+Logs carry recorded task events, and verification spans connect command starts with their results and measured duration. An attempt with no recorded result appears as incomplete coverage, rather than a fabricated completed span. Export uses stable identifiers, so you can correlate repeated exports and handle duplicates in your collector.
+
+Default exports hash task and actor identities and omit goals, decisions, paths, commands, and artifacts. `--include-content` includes recorded text after best-effort redaction, so review that potentially sensitive content before sending it. An explicit `--endpoint` is required for a network request; ordinary checkpoint commands never send telemetry. HTTPS is required beyond loopback unless you explicitly pass `--allow-insecure`. Optional authentication headers come from `OTEL_EXPORTER_OTLP_HEADERS`.
+
+Export pages use `--limit` and `--after`, and payloads are capped at 8 MiB. Without an endpoint, stdout contains the OTLP payload and stderr contains cursor and coverage metadata. With an endpoint, stdout reports delivery and coverage. Rejected, malformed, or partial collector responses fail the export without changing local history, and partial responses are not retried automatically.
 
 ## State and migration
 
@@ -113,7 +156,7 @@ State selection, highest priority first:
 3. Legacy `AGENT_HARNESS_STATE`.
 4. `$XDG_STATE_HOME/agent-checkpoint`, or `~/.local/state/agent-checkpoint`.
 
-Reads existing schema-1 JSON records. To reuse a legacy state directory, stop all old checkpoint writers and hooks, then select that directory explicitly. The old harness does not honor the new lock. Never run both against shared state. Installation does not copy records or change hooks. Back up state before migration.
+Existing schema-1 JSON records remain readable, and the first history mutation imports them as labeled baseline snapshots. Back up the state directory and stop legacy checkpoint writers and hooks before switching implementations. Restart agent sessions that loaded old hooks, because those writers cannot participate in the new history protocol. Installation does not copy records or change hooks. After migration, recovery means reinstalling a compatible standalone version; returning to a legacy snapshot writer can lose newly recorded work.
 
 A project can use `.agent/harness.toml` to set the resume context budget with `checkpoint.resume_context_tokens` and the maximum age of offered tasks with `checkpoint.max_offer_age_days`. The defaults are 2000 tokens and 30 days, and the tool ignores other harness settings. To find tasks across checkouts, it matches the repository path, the shared Git directory for worktrees, or the normalized origin URL for clones.
 
@@ -129,15 +172,17 @@ Optional transcript capture:
 agent-checkpoint capture --transcript /path/to/session.jsonl --event compact --cwd /path/to/project
 ```
 
-Use repeated `--exclude-prefix TEXT` options to omit application-specific prompts. Adapters recognize Claude and Codex JSONL event shapes. They use explicit provenance metadata, not personal prompt matchers. Unsupported formats may produce `null`. Capture is bounded to 32 MiB total and 1 MiB per event. Automatic crash-journal recovery belongs to the original harness and is not included. Hook installation is opt-in: call the command above from your agent's lifecycle hook with its transcript and cwd. The tool leaves your settings alone, and the synthetic tests show which event shapes the adapters support. Check those examples when a transcript format changes.
+Use repeated `--exclude-prefix TEXT` options to omit application-specific prompts. Adapters recognize Claude and Codex JSONL event shapes. They use explicit provenance metadata, not personal prompt matchers. Unsupported formats may produce `null`. Capture is bounded to 32 MiB total and 1 MiB per event. The supported Python integration API also records transcript pointers and recovers them after an unclean exit; downstream hooks can delegate that recovery to this package. Hook installation is opt-in: call the command above from your agent's lifecycle hook with its transcript and cwd. The tool leaves your settings alone, and the synthetic tests show which event shapes the adapters support. Check those examples when a transcript format changes.
 
 ## Guarantees and limits
 
-Local files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Atomic replacement protects individual records. Multi-record supersede, dedupe, and close operations are not crash-atomic. After interruption, inspect `list --json`, statuses, and `supersedes`/`superseded_by` links before retrying. If a multi-record operation fails while the process is still running, the tool reports that some writes may have completed. A killed process cannot report its progress, so keep backups and inspect the records before retrying.
+Local history files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Each command commits its task changes and observations together in one immutable JSON batch, then refreshes the current checkpoint files as a disposable cache. If a cache write fails, the committed history still reconstructs the task. Multi-task close, supersede, and dedupe changes share that commit boundary.
 
-Verification runs without holding the lock. Completion rejects a changed task revision, repository, or HEAD. It records the command result for the observed HEAD. It does not guarantee that uncommitted working files stayed unchanged during execution. Concurrent source edits are outside this guarantee. A different worktree or clone must match the checkpoint HEAD. To verify a finished task again, save the same name to reopen it first.
+Sequence numbers and a hash chain detect gaps and alterations before a surviving later event. They do not authenticate history against your OS account or prove that its tail was never removed, so keep consistent backups. History is not pruned automatically. A post-rename durability error includes its sequence and batch ID; inspect `history --json` before retrying, and remember that seeing a file does not prove it would survive power loss. Reads reject corrupt committed history rather than silently repairing it.
 
-The tool redacts recognizable secret patterns, but it cannot catch every credential, so review checkpoint files before sharing them and keep state directories out of public Git. Treat captured context as untrusted text. You choose the state directory, and its file permissions cannot isolate it from another process running as your OS account. Use local storage with reliable POSIX file locks; network filesystems and Windows are unsupported. The command line is the supported interface in v0.1, while the Python interfaces may change.
+Verification runs without holding the lock. The tool records a start before running the command, then records its result or conflict under the same attempt ID. Completion rejects a changed task revision, repository, or HEAD. It records the command result for the observed HEAD. It does not guarantee that uncommitted working files stayed unchanged during execution. Concurrent source edits are outside this guarantee. A different worktree or clone must match the checkpoint HEAD. To verify a finished task again, save the same name to reopen it first.
+
+The tool redacts recognizable secret patterns, but it cannot catch every credential, so review checkpoint files before sharing them and keep state directories out of public Git. Treat captured context as untrusted text. You choose the state directory, and its file permissions cannot isolate it from another process running as your OS account. Use local storage with reliable POSIX file locks; network filesystems and Windows are unsupported. The command line and `agent_checkpoint.integration` are the supported interfaces in v0.2; other Python modules are internal. See [the integration contract](docs/integration.md).
 
 ## Development
 

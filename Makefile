@@ -6,3 +6,5 @@ test:
 test-failure:
 	PYTHONPATH=$(CURDIR)/src python3 -m unittest discover -s tests -p 'test_storage.py'
 	PYTHONPATH=$(CURDIR)/src python3 -m unittest discover -s tests -p 'test_verification.py'
+
+	PYTHONPATH=$(CURDIR)/src python3 -m unittest discover -s tests -p 'test_journal_faults.py'

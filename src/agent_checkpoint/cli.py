@@ -78,6 +78,10 @@ def print_table(records):
 def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir")
+    parser.add_argument("--agent-id", help="identity recording this operation")
+    parser.add_argument(
+        "--session-id", dest="actor_session_id", help="session recording this operation"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     save = sub.add_parser("save", help="create or update a checkpoint")
@@ -190,7 +194,85 @@ def _main():
         "--event", choices=("compact", "stop", "session-end"), required=True
     )
 
+    for name in ("history", "timeline"):
+        command = sub.add_parser(
+            name,
+            help="review immutable task history"
+            if name == "history"
+            else "review cross-task trajectories",
+        )
+        if name == "history":
+            command.add_argument("id", help=REF_HELP)
+        command.add_argument("--json", action="store_true")
+        command.add_argument("--limit", type=int, default=100)
+        command.add_argument("--after", help="next_cursor from a previous page")
+        command.add_argument("--since", type=int, default=0)
+        command.add_argument("--all-repos", action="store_true")
+        command.add_argument("--cwd", default=".")
+        command.add_argument("--filter-session", dest="filter_session")
+        command.add_argument("--filter-agent", dest="filter_agent")
+    stats = sub.add_parser("stats", help="measured task outcomes and coverage")
+    stats.add_argument("--since", type=int, default=30)
+    stats.add_argument("--all-repos", action="store_true")
+    stats.add_argument("--cwd", default=".")
+    handoff = sub.add_parser("handoff", help="record an explicit agent handoff")
+    handoff.add_argument("id")
+    handoff.add_argument("--to-agent", required=True)
+    handoff.add_argument("--to-session")
+    handoff.add_argument("--note", default="")
+    link = sub.add_parser("link", help="link a task to a parent goal")
+    link.add_argument("id")
+    link.add_argument("--parent", required=True)
+    export = sub.add_parser(
+        "export", help="export recorded history, with explicit optional OTLP delivery"
+    )
+    export.add_argument("--format", choices=("json", "otlp"), default="otlp")
+    export.add_argument("--signal", choices=("logs", "traces"), default="logs")
+    export.add_argument("--include-content", action="store_true")
+    export.add_argument(
+        "--endpoint",
+        help="explicit collector endpoint; absent means no network request",
+    )
+    export.add_argument("--allow-insecure", action="store_true")
+    export.add_argument("--timeout", type=float, default=10)
+    export.add_argument("--limit", type=int, default=100)
+    export.add_argument("--after")
+    export.add_argument("--since", type=int, default=0)
+    export.add_argument("--all-repos", action="store_true")
+    export.add_argument("--cwd", default=".")
+    for command in (
+        save,
+        listing,
+        offer,
+        resume,
+        verify,
+        complete,
+        close,
+        log,
+        dedupe,
+        capture,
+        stats,
+        handoff,
+        link,
+        export,
+    ):
+        command.add_argument("--agent-id", default=argparse.SUPPRESS)
+        if command is not save:
+            command.add_argument(
+                "--session-id", dest="actor_session_id", default=argparse.SUPPRESS
+            )
     args = parser.parse_args()
+    from .journal import ACTOR, actor_values
+
+    ACTOR.set(
+        actor_values(
+            {
+                "agent_id": args.agent_id,
+                "session_id": args.actor_session_id
+                or getattr(args, "session_id", None),
+            }
+        )
+    )
     project = Path(getattr(args, "cwd", "."))
     state, policy = hc.configuration(args.state_dir, project)
     tokens = policy["checkpoint"]["resume_context_tokens"]
@@ -228,7 +310,7 @@ def _main():
         else:
             print(json.dumps(hc.sanitized(records), indent=2, sort_keys=True))
     elif args.command == "resume":
-        emit(hc.resolve_checkpoint(state, args.id), args.context, tokens)
+        emit(hc.resume_checkpoint(state, args.id), args.context, tokens)
     elif args.command == "verify":
         record, code = hc.run_verification(state, args.id, args.run, Path(args.cwd))
         emit(record)
@@ -296,12 +378,84 @@ def _main():
             tuple(p.lower() for p in args.exclude_prefix),
         )
         emit(record)
+    elif args.command in ("history", "timeline"):
+        from .observability import render_timeline
+
+        result = hc.history(
+            state,
+            args.id if args.command == "history" else None,
+            limit=args.limit,
+            after=args.after,
+            since_days=args.since,
+            cwd=None if args.all_repos or args.command == "history" else Path(args.cwd),
+            session_id=args.filter_session,
+            agent_id=args.filter_agent,
+        )
+        if args.json:
+            emit(result)
+        else:
+            print(render_timeline(hc.sanitized(result)))
+    elif args.command == "stats":
+        emit(
+            hc.stats(
+                state,
+                cwd=None if args.all_repos else Path(args.cwd),
+                since_days=args.since,
+            )
+        )
+    elif args.command == "handoff":
+        emit(
+            hc.handoff_checkpoint(
+                state, args.id, args.to_agent, args.to_session, args.note
+            )
+        )
+    elif args.command == "link":
+        emit(hc.link_checkpoint(state, args.id, args.parent))
+    elif args.command == "export":
+        filters = {
+            "limit": args.limit,
+            "after": args.after,
+            "since_days": args.since,
+            "cwd": None if args.all_repos else Path(args.cwd),
+        }
+        if args.format == "json":
+            if args.endpoint:
+                raise ValueError("--endpoint requires --format otlp")
+            emit(hc.timeline(state, **filters))
+        else:
+            from .telemetry import export as otlp_export
+
+            result = otlp_export(
+                state,
+                signal=args.signal,
+                include_content=args.include_content,
+                endpoint=args.endpoint,
+                timeout=args.timeout,
+                allow_insecure=args.allow_insecure,
+                **filters,
+            )
+            if args.endpoint:
+                emit({k: v for k, v in result.items() if k != "payload"})
+            else:
+                emit(result["payload"])
+                print(
+                    json.dumps(
+                        {k: v for k, v in result.items() if k != "payload"},
+                        sort_keys=True,
+                    ),
+                    file=sys.stderr,
+                )
     return 0
 
 
 def main():
+    from .journal import ACTOR
+
+    token = ACTOR.set({})
     try:
         return _main()
     except (OSError, ValueError, RuntimeError) as exc:
         print(hc.redact_secrets(f"agent-checkpoint: {exc}")[0], file=sys.stderr)
         return 1
+    finally:
+        ACTOR.reset(token)

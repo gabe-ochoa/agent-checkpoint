@@ -9,6 +9,7 @@ import stat
 import tempfile
 import time
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -25,11 +26,34 @@ def validate_id(value):
     return value
 
 
+def fsync_directory(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno not in (errno.EINVAL, errno.ENOTSUP):
+                raise
+    finally:
+        os.close(fd)
+
+
 def ensure_private_dir(path):
     if path.is_symlink():
         raise ValueError(f"symlinked state directory: {path}; select a real directory")
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.chmod(0o700)
+    for created in reversed(missing):
+        created.chmod(0o700)
+        fsync_directory(created)
+        fsync_directory(created.parent)
+    if path.stat().st_mode & 0o777 != 0o700:
+        path.chmod(0o700)
+        fsync_directory(path)
 
 
 def reject_link(path):
@@ -143,6 +167,7 @@ def validate_record(record, path):
         "session_id",
         "platform",
         "last_material_change_at",
+        "parent_task_id",
     ):
         if key in record and not isinstance(record[key], str):
             fail()
@@ -151,6 +176,11 @@ def validate_record(record, path):
             not isinstance(record[key], list)
             or not all(isinstance(v, str) for v in record[key])
         ):
+            fail()
+    if record.get("parent_task_id"):
+        try:
+            validate_id(record["parent_task_id"])
+        except ValueError:
             fail()
     for value in record.get("supersedes", []):
         try:
@@ -209,7 +239,7 @@ def sanitized(value):
     return value
 
 
-def read_record(path):
+def read_record_file(path):
     reject_link(path.parent)
     reject_link(path)
     try:
@@ -228,8 +258,44 @@ def read_record(path):
     return record
 
 
-def write_record(path, record):
+def write_record_file(path, record):
     record = sanitized(record)
     validate_record(record, path)
     atomic_write(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
     return dict(record, _path=str(path))
+
+
+def active_for(state):
+    from .journal import ACTIVE
+
+    tx = ACTIVE.get()
+    return (
+        tx
+        if tx is not None and tx.state == Path(state).expanduser().absolute()
+        else None
+    )
+
+
+def read_record(path):
+    path = Path(path).absolute()
+    tx = active_for(path.parent.parent)
+    if tx is not None and path.parent == tx.state / "checkpoints":
+        reject_link(path.parent)
+        reject_link(path)
+        record = tx.records.get(path.stem)
+        return dict(deepcopy(record), _path=str(path)) if record is not None else None
+    return read_record_file(path)
+
+
+def write_record(path, record):
+    path = Path(path).absolute()
+    tx = active_for(path.parent.parent)
+    if tx is not None:
+        reject_link(path.parent)
+        reject_link(path)
+        return tx.write(path, record)
+    if (path.parent.parent / "events").exists():
+        raise ValueError(
+            "checkpoint history is active; mutate through the standalone service"
+        )
+    return write_record_file(path, record)

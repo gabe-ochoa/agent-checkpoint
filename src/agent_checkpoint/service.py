@@ -1,11 +1,12 @@
 """Locking boundary used by the CLI. Internal API, not a verification authority."""
 
-import hashlib
 import json
 import os
 import subprocess
 import sys
+import time
 import tomllib
+import uuid
 from pathlib import Path
 
 from . import core
@@ -18,10 +19,11 @@ from .git import (
     repo_identity,
     same_repo,
 )
+from .journal import actor_context, record_revision, transaction
 from .redaction import find_secrets as find_secrets
 from .redaction import redact_secrets as redact_secrets
 from .rendering import render_work_log as render_work_log
-from .storage import locked, sanitized
+from .storage import sanitized
 
 CLOSE_REASONS = core.CLOSE_REASONS
 FINISHED_REASONS = core.FINISHED_REASONS
@@ -67,8 +69,8 @@ def configuration(explicit, cwd):
 
 
 def call(name, state, *args, **kwargs):
-    with locked(state):
-        return getattr(core, name)(Path(state), *args, **kwargs)
+    with transaction(state, name) as tx:
+        return getattr(core, name)(tx.state, *args, **kwargs)
 
 
 def save_checkpoint(
@@ -86,22 +88,23 @@ def save_checkpoint(
     supersedes=None,
     artifacts=None,
 ):
-    return call(
-        "save_checkpoint",
-        state_dir,
-        cwd,
-        goal,
-        next_action,
-        decisions,
-        verification,
-        blocker,
-        session_id,
-        platform,
-        checkpoint_id,
-        name,
-        supersedes,
-        artifacts,
-    )
+    with actor_context(session_id=session_id, platform=platform):
+        return call(
+            "save_checkpoint",
+            state_dir,
+            cwd,
+            goal,
+            next_action,
+            decisions,
+            verification,
+            blocker,
+            session_id,
+            platform,
+            checkpoint_id,
+            name,
+            supersedes,
+            artifacts,
+        )
 
 
 def list_checkpoints(state, status=None):
@@ -175,7 +178,8 @@ def checkpoint_context(record, token_limit=2000):
 
 
 def close_many(state, refs, reason, note="", artifacts=None):
-    with locked(state):
+    with transaction(state, "close_many") as tx:
+        state = tx.state
         if reason not in CLOSE_REASONS:
             raise ValueError("invalid close reason")
         records = [core.resolve_checkpoint(state, ref) for ref in refs]
@@ -193,18 +197,19 @@ def close_many(state, refs, reason, note="", artifacts=None):
                 )
         except OSError as exc:
             raise RuntimeError(
-                f"partial close: {len(done)} of {len(records)} applied; inspect list --json before retrying"
+                "close failed before commit; no changes applied; inspect history before retrying if durability was uncertain"
             ) from exc
         return done
 
 
 def revision(record):
-    value = {k: v for k, v in record.items() if not k.startswith("_")}
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+    return record_revision(record)
 
 
 def run_verification(state, ref, command, cwd, complete=False, note="", artifacts=None):
-    with locked(state):
+    attempt = uuid.uuid4().hex
+    with transaction(state, "verification.start") as tx:
+        state = tx.state
         record = core.resolve_checkpoint(state, ref)
         core.require_open(record)
         identity = repo_identity(cwd)
@@ -215,48 +220,140 @@ def run_verification(state, ref, command, cwd, complete=False, note="", artifact
             "head", ""
         ):
             raise ValueError(
-                "verification checkout HEAD differs from checkpoint; use the original checkout or save an update"
+                "verification checkout HEAD differs from checkpoint; save an update"
             )
         version = revision(record)
-    # No lock while a caller-authorized shell command runs. stdout is diagnostic stderr;
-    # keep stdout a single JSON record for automation.
-    code = subprocess.run(
-        ["/bin/sh", "-c", command], cwd=cwd, stdout=sys.stderr, check=False
-    ).returncode
-    with locked(state):
-        current = core.resolve_checkpoint(state, record["id"])
+        tx.observe(
+            "verification.started",
+            record["id"],
+            {
+                "attempt_id": attempt,
+                "record_revision": version,
+                "head": before["head"],
+                "command": redact_secrets(command)[0][:500],
+            },
+        )
+    started = time.monotonic_ns()
+    try:
+        code = subprocess.run(
+            ["/bin/sh", "-c", command], cwd=cwd, stdout=sys.stderr, check=False
+        ).returncode
+    except (OSError, KeyboardInterrupt) as exc:
+        with transaction(state, "verification.abort") as tx:
+            tx.observe(
+                "verification.aborted",
+                record["id"],
+                {
+                    "attempt_id": attempt,
+                    "applied": False,
+                    "exit_code": None,
+                    "duration_ns": time.monotonic_ns() - started,
+                    "reason": type(exc).__name__,
+                },
+            )
+        raise RuntimeError(
+            "verification interrupted; attempt recorded, task was not completed"
+        ) from exc
+    duration = time.monotonic_ns() - started
+    conflict = False
+    with transaction(state, "verification.finish") as tx:
+        current = core.resolve_checkpoint(tx.state, record["id"])
         after = git_snapshot(cwd)
-        if (
+        conflict = (
             revision(current) != version
             or repo_identity(cwd) != identity
             or after["head"] != before["head"]
-        ):
-            raise RuntimeError(
-                "verification conflict: task or HEAD changed; no result recorded, inspect and rerun verification"
-            )
-        if complete and code == 0:
-            # Record the actual checked checkout's HEAD, including deleted/moved original paths.
-            current["head"] = after["head"]
+        )
+        tx.observe(
+            "verification.conflict" if conflict else "verification.finished",
+            record["id"],
+            {
+                "attempt_id": attempt,
+                "applied": not conflict,
+                "exit_code": code,
+                "duration_ns": duration,
+                "head": after["head"],
+            },
+        )
+        if not conflict:
             core._record_verification(
                 current,
-                core._verification_entry(command, code, "passed", after["head"]),
+                core._verification_entry(
+                    command, code, "passed" if code == 0 else "failed", after["head"]
+                ),
             )
-            for entry in current.get("verification", []):
-                if isinstance(entry, dict) and entry.get("status") == "pending":
-                    entry["status"] = "unresolved"
-            core._annotate(current, note, artifacts)
-            current.update(
-                status="complete", closed_at=core.now_iso(), updated_at=core.now_iso()
-            )
-            return core._write_checkpoint(Path(current["_path"]), current), code
-        core._record_verification(
-            current,
-            core._verification_entry(
-                command, code, "passed" if code == 0 else "failed", after["head"]
-            ),
+            current["updated_at"] = core.now_iso()
+            if complete and code == 0:
+                current["head"] = after["head"]
+                for entry in current.get("verification", []):
+                    if isinstance(entry, dict) and entry.get("status") == "pending":
+                        entry["status"] = "unresolved"
+                core._annotate(current, note, artifacts)
+                current.update(status="complete", closed_at=core.now_iso())
+            current = core._write_checkpoint(Path(current["_path"]), current)
+    if conflict:
+        raise RuntimeError(
+            "verification conflict: task or HEAD changed; attempt recorded as unapplied, inspect and rerun verification"
         )
-        current["updated_at"] = core.now_iso()
-        return core._write_checkpoint(Path(current["_path"]), current), code
+    return current, code
+
+
+def resume_checkpoint(state, ref):
+    with transaction(state, "resume") as tx:
+        record = core.resolve_checkpoint(tx.state, ref)
+        tx.observe("task.resumed", record["id"], {"head": record.get("head", "")})
+        return record
+
+
+def handoff_checkpoint(state, ref, to_agent, to_session=None, note=""):
+    if not to_agent:
+        raise ValueError("handoff requires a target agent ID")
+    with transaction(state, "handoff") as tx:
+        record = core.resolve_checkpoint(tx.state, ref)
+        core.require_open(record)
+        tx.observe(
+            "task.handoff",
+            record["id"],
+            {"to_agent": to_agent, "to_session": to_session or "", "note": note},
+        )
+        return record
+
+
+def link_checkpoint(state, ref, parent_ref):
+    with transaction(state, "link") as tx:
+        record = core.resolve_checkpoint(tx.state, ref)
+        core.require_open(record)
+        parent = core.resolve_checkpoint(tx.state, parent_ref)
+        if parent["id"] == record["id"]:
+            raise ValueError("task cannot parent itself")
+        seen = {record["id"]}
+        cursor = parent
+        while cursor:
+            if cursor["id"] in seen:
+                raise ValueError("parent task cycle")
+            seen.add(cursor["id"])
+            cursor = tx.records.get(cursor.get("parent_task_id"))
+        record["parent_task_id"] = parent["id"]
+        record["updated_at"] = core.now_iso()
+        result = core._write_checkpoint(Path(record["_path"]), record)
+        tx.observe("task.linked", record["id"], {"parent_task_id": parent["id"]})
+        return result
+
+
+def history(state, ref=None, **kwargs):
+    from .observability import history as view
+
+    return view(state, ref, **kwargs)
+
+
+def timeline(state, **kwargs):
+    return history(state, None, **kwargs)
+
+
+def stats(state, **kwargs):
+    from .observability import stats as report
+
+    return report(state, **kwargs)
 
 
 def capture_checkpoint(state, transcript, cwd, event, exclude_prefixes=()):

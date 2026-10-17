@@ -319,7 +319,10 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(0, hc.stale_checks(cp))
             raw = json.loads(Path(cp["_path"]).read_text())
             raw["created_at"] = "2020-01-01T00:00:00+00:00"
-            Path(cp["_path"]).write_text(json.dumps(raw))
+            state = Path(td) / "legacy"
+            legacy = state / "checkpoints/ship.json"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(json.dumps(raw))
             self.assertEqual(2, hc.stale_checks(hc.resolve_checkpoint(state, "ship")))
             record = hc.verify_checkpoint(state, "ship", "make test", 1)
             self.assertEqual(
