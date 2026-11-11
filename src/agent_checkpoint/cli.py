@@ -3,11 +3,13 @@
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import core
 from . import service as hc
 
 REF_HELP = "checkpoint name, id, or unique id prefix"
@@ -179,6 +181,18 @@ def _main():
         "--apply", action="store_true", help="close them; default is a dry run"
     )
 
+    prune = sub.add_parser(
+        "prune", help="close idle open checkpoints as abandoned (dry run by default)"
+    )
+    prune.add_argument("--apply", action="store_true", help="close them; default is a dry run")
+    prune.add_argument("--auto-days", type=int, default=core.PRUNE_AUTO_DAYS,
+                       help="idle days before an auto-captured session is pruned")
+    prune.add_argument("--manual-days", type=int, default=core.PRUNE_MANUAL_DAYS,
+                       help="idle days before saved or blocked work is pruned")
+    prune.add_argument("--keep-session", default=None,
+                       help="session id to keep; defaults to the current agent session")
+    prune.add_argument("--json", action="store_true")
+
     capture = sub.add_parser(
         "capture", help="capture from a transcript lifecycle event"
     )
@@ -250,6 +264,7 @@ def _main():
         close,
         log,
         dedupe,
+        prune,
         capture,
         stats,
         handoff,
@@ -347,6 +362,21 @@ def _main():
             print(
                 f"closed {record['id']} ({args.reason}): {record.get('goal', '')[:60]}"
             )
+    elif args.command == "prune":
+        keep = args.keep_session or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_SESSION_ID")
+        actions = hc.sanitized(hc.prune_checkpoints(
+            state, apply=args.apply, auto_days=args.auto_days,
+            manual_days=args.manual_days, keep_session=keep))
+        if args.json:
+            print(json.dumps({"applied": args.apply, "actions": actions}, indent=2))
+        else:
+            verb = "closed" if args.apply else "would close"
+            for action in actions:
+                print(f"{verb} {action['id']} ({action['kind']}, idle {action['idle_days']}d): {action['goal'][:60]}")
+            if not actions:
+                print("no idle open checkpoints")
+            elif not args.apply:
+                print(f"dry run: {len(actions)} to close; pass --apply to close them")
     elif args.command == "dedupe":
         actions = hc.sanitized(hc.dedupe_checkpoints(state, apply=args.apply))
         verb = "closed" if args.apply else "would close"

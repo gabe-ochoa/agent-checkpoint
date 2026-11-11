@@ -126,7 +126,7 @@ History and timeline pages return `next_cursor` and `has_more`. Pass the cursor 
 
 ## Commands
 
-`save`, `list`, `offer`, `resume`, `verify`, `complete`, `close`, `log`, `dedupe`, `capture`, `history`, `timeline`, `stats`, `handoff`, `link`, and `export` have `--help`. Most commands output JSON. `list` defaults to a table, `log` to Markdown, and `resume --context` to readable text. Use `list --json` and `log --json` for scripts. Verification command output goes to stderr, keeping stdout parseable. Exit status: 0 success, 1 operational failure, 2 argument error. `offer` with no matching task returns 1 and `null`.
+`save`, `list`, `offer`, `resume`, `verify`, `complete`, `close`, `log`, `dedupe`, `prune`, `capture`, `history`, `timeline`, `stats`, `handoff`, `link`, and `export` have `--help`. Most commands output JSON. `list` defaults to a table, `log` to Markdown, and `resume --context` to readable text. Use `list --json` and `log --json` for scripts. Verification command output goes to stderr, keeping stdout parseable. Exit status: 0 success, 1 operational failure, 2 argument error. `offer` with no matching task returns 1 and `null`.
 
 ## OpenTelemetry export
 
@@ -175,6 +175,8 @@ agent-checkpoint capture --transcript /path/to/session.jsonl --event compact --c
 Use repeated `--exclude-prefix TEXT` options to omit application-specific prompts. Adapters recognize Claude and Codex JSONL event shapes. They use explicit provenance metadata, not personal prompt matchers. Unsupported formats may produce `null`. Capture is bounded to 32 MiB total and 1 MiB per event. The supported Python integration API also records transcript pointers and recovers them after an unclean exit; downstream hooks can delegate that recovery to this package. Hook installation is opt-in: call the command above from your agent's lifecycle hook with its transcript and cwd. The tool leaves your settings alone, and the synthetic tests show which event shapes the adapters support. Check those examples when a transcript format changes.
 
 ## Guarantees and limits
+
+`prune` closes idle open checkpoints as `abandoned` and is a dry run unless you pass `--apply`. Auto-captured sessions (Claude or Codex with no decisions and no blocker) are idle after 14 days; saved or blocked work waits 60. Tune with `--auto-days` and `--manual-days`. The current agent session is never pruned, and closed records stay in history.
 
 Local history files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Each command commits its task changes and observations together in one immutable JSON batch, then refreshes the current checkpoint files as a disposable cache. If a cache write fails, the committed history still reconstructs the task. Multi-task close, supersede, and dedupe changes share that commit boundary.
 
