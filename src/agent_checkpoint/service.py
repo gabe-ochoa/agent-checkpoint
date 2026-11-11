@@ -159,6 +159,11 @@ def dedupe_checkpoints(state, apply=False):
     return call("dedupe_checkpoints", state, apply)
 
 
+def prune_checkpoints(state, apply=False, now=None, auto_days=core.PRUNE_AUTO_DAYS,
+                      manual_days=core.PRUNE_MANUAL_DAYS, keep_session=None):
+    return call("prune_checkpoints", state, apply, now, auto_days, manual_days, keep_session)
+
+
 def work_log(state, cwd=None, since_days=90, include=("complete", "done-elsewhere")):
     if since_days is not None and since_days < 0:
         raise ValueError("since days must be nonnegative")

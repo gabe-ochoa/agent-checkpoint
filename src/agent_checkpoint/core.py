@@ -543,6 +543,86 @@ def dedupe_checkpoints(state_dir: Path, apply: bool = False) -> list[dict[str, s
     return actions
 
 
+AUTO_PLATFORMS = ("claude", "codex")
+PRUNE_AUTO_DAYS = 14
+PRUNE_MANUAL_DAYS = 60
+
+
+def _idle_since(record: dict[str, Any]) -> datetime | None:
+    stamp = record.get("last_material_change_at") or record.get("updated_at") or record.get("created_at")
+    if not stamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def prune_checkpoints(
+    state_dir: Path,
+    apply: bool = False,
+    now: datetime | None = None,
+    auto_days: int = PRUNE_AUTO_DAYS,
+    manual_days: int = PRUNE_MANUAL_DAYS,
+    keep_session: str | None = None,
+) -> list[dict[str, Any]]:
+    """Close idle open checkpoints as abandoned. Dry run unless apply.
+
+    Auto-captured sessions (claude or codex platform with no decisions and no
+    blocker) are idle after auto_days. Deliberately saved or blocked work
+    carries intent and waits manual_days. Platform claude/codex is set only by
+    transcript capture; deliberate saves record platform "manual". The
+    caller's session is kept when its id is known, and nothing active within
+    the threshold (at least one day) is pruned. Records are closed, never
+    deleted, so history keeps them. The service runs this in one transaction:
+    a failed close discards every close in the batch.
+    """
+    if auto_days < 1 or manual_days < 1:
+        raise ValueError("prune thresholds must be at least one day")
+    now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    actions: list[dict[str, Any]] = []
+    for record in list_checkpoints(state_dir, "open"):
+        if keep_session and record.get("session_id") == keep_session:
+            continue
+        since = _idle_since(record)
+        if since is None:
+            continue
+        auto = (
+            record.get("platform") in AUTO_PLATFORMS
+            and not record.get("decisions")
+            and not record.get("blocker")
+        )
+        limit = auto_days if auto else manual_days
+        idle_days = (now - since).days
+        if idle_days < limit:
+            continue
+        kind = "auto-captured" if auto else ("blocked" if record.get("blocker") else "saved")
+        actions.append({
+            "id": record["id"],
+            "name": str(record.get("name") or ""),
+            "goal": str(record.get("goal") or "")[:80],
+            "repo": str(record.get("repo") or ""),
+            "kind": kind,
+            "idle_days": idle_days,
+            "threshold_days": limit,
+        })
+    if apply:
+        for action in actions:
+            try:
+                close_checkpoint(
+                    state_dir, action["id"], "abandoned",
+                    note=f"pruned after {action['idle_days']}d idle ({action['kind']})",
+                )
+            except OSError as exc:
+                raise RuntimeError(
+                    "prune failed before history commit; transaction discarded"
+                ) from exc
+    return actions
+
+
 FINISHED_REASONS = ("complete", "done-elsewhere", "abandoned", "superseded")
 
 
