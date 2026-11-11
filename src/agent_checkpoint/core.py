@@ -571,12 +571,18 @@ def prune_checkpoints(
 
     Auto-captured sessions (claude or codex platform with no decisions and no
     blocker) are idle after auto_days. Deliberately saved or blocked work
-    carries intent and waits manual_days. The caller's own session is kept.
-    Records are closed, never deleted, so history keeps them.
+    carries intent and waits manual_days. Platform claude/codex is set only by
+    transcript capture; deliberate saves record platform "manual". The
+    caller's session is kept when its id is known, and nothing active within
+    the threshold (at least one day) is pruned. Records are closed, never
+    deleted, so history keeps them. The service runs this in one transaction:
+    a failed close discards every close in the batch.
     """
     if auto_days < 1 or manual_days < 1:
         raise ValueError("prune thresholds must be at least one day")
     now = now or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     actions: list[dict[str, Any]] = []
     for record in list_checkpoints(state_dir, "open"):
         if keep_session and record.get("session_id") == keep_session:

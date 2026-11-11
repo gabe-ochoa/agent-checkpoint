@@ -176,7 +176,7 @@ Use repeated `--exclude-prefix TEXT` options to omit application-specific prompt
 
 ## Guarantees and limits
 
-`prune` closes idle open checkpoints as `abandoned` and is a dry run unless you pass `--apply`. Auto-captured sessions (Claude or Codex with no decisions and no blocker) are idle after 14 days; saved or blocked work waits 60. Tune with `--auto-days` and `--manual-days`. The current agent session is never pruned, and closed records stay in history.
+`prune` closes idle open checkpoints as `abandoned` and is a dry run unless you pass `--apply`. Auto-captured sessions (Claude or Codex with no decisions and no blocker) are idle after 14 days; saved or blocked work waits 60. Tune with `--auto-days` and `--manual-days`. Nothing active within its threshold is pruned, the current agent session is kept when its ID is known (`--keep-session`, or the Claude Code or Codex session variable), closes in one run commit together, and closed records stay in history.
 
 Local history files use mode 0600 and state directories mode 0700. Cooperative advisory locking serializes reads and mutations. Each command commits its task changes and observations together in one immutable JSON batch, then refreshes the current checkpoint files as a disposable cache. If a cache write fails, the committed history still reconstructs the task. Multi-task close, supersede, and dedupe changes share that commit boundary.
 
